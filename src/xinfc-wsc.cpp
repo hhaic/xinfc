@@ -152,11 +152,14 @@ int apply_config(
 
     ///////////////////////////////////////////////////////
 
+#if 0 
     const std::string backup_filename = "nfc_ndef_backup.bin";
+#endif
 
     unsigned char ndef_rbuf[xinfc::i2c_nfc_device::max_ndef_buf_size];
     unsigned char ndef_wbuf[xinfc::i2c_nfc_device::max_ndef_buf_size];
 
+#if 0
     std::cerr << "Reading existing NDEF data..." << std::endl;
 
     device.read_ndef(ndef_rbuf, sizeof(ndef_rbuf));
@@ -204,6 +207,7 @@ int apply_config(
 
         std::cerr << "Backup complete." << std::endl;
     }
+#endif
 
     ////////////////////////////////////////////////////////////////
 
@@ -223,12 +227,12 @@ int apply_config(
     {
         std::cerr << "Writing new NDEF data..." << std::endl;
 
-        const unsigned int max_bytes = 4;
+        const unsigned int max_bytes = 16;
 
-        for (unsigned int i = 0; i < size; i += max_bytes)
+        for (unsigned int i = 0, offset = 0; offset < size; i++, offset += max_bytes)
         {
             const unsigned int s = std::min(max_bytes,
-                (unsigned int)size - i);
+                (unsigned int)size - offset);
 
             const int max_w_retries = 5;
             unsigned int w_retries = 0;
@@ -237,7 +241,7 @@ int apply_config(
             {
                 try
                 {
-                    device.write_ndef_at(ndef_wbuf + i, s, i);
+                    device.write_ndef_at(ndef_wbuf + offset, s, i);
 
                     break;
                 }
@@ -270,7 +274,7 @@ int apply_config(
         {
             memset(ndef_rbuf, 0, size);
 
-            const unsigned int aligned_size = (((size - 1) / 4) + 1) * 4;
+            const unsigned int aligned_size = (((size - 1) / 16) + 1) * 16;
 
             const int max_w_retries = 20;
             unsigned int w_retries = 0;

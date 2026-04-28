@@ -50,9 +50,9 @@ class i2c_nfc_device
 public:
 
     static const unsigned int max_ndef_buf_size = 160;
-    static const unsigned short base_ndef_addr = 0x10;
+    static const unsigned short base_ndef_addr = 0x01;  // NT3H2111 page 1 offset
 
-    static_assert(max_ndef_buf_size / 4 <= I2C_RDRW_IOCTL_MAX_MSGS);
+    static_assert(max_ndef_buf_size / 16 <= I2C_RDRW_IOCTL_MAX_MSGS);
 
 private:
 
@@ -130,9 +130,9 @@ public:
         _fd = -1;
     }
 
-    void read_ndef(unsigned char* out_buf, unsigned int size_4B_aligned)
+    void read_ndef(unsigned char* out_buf, unsigned int size)
     {
-        if (size_4B_aligned == 0)
+        if (size == 0)
             return;
 
         if (out_buf == nullptr)
@@ -140,52 +140,50 @@ public:
             throw i2c_error { "invalid ndef buffer", 0 };
         }
 
-        if ((size_4B_aligned % 4) != 0)
+        if (size > max_ndef_buf_size)
+            size = max_ndef_buf_size;
+
+        memset(out_buf, 0, size);
+
+        // Read in 16-byte chunks
+        const unsigned int chunk_size = 16;
+        for (unsigned int i = 0, offset = 0; offset < size; i++, offset += chunk_size)
         {
-            throw i2c_error { "invalid read alignment", 0 };
-        }
+            unsigned int read_size = std::min(chunk_size, size - offset);
+            unsigned short addr = base_ndef_addr + i;
 
-        if (size_4B_aligned > max_ndef_buf_size)
-            size_4B_aligned = max_ndef_buf_size;
+            const unsigned int read_nmsgs = 2;
+            struct i2c_msg msgs[2];
+            struct i2c_rdwr_ioctl_data rdwr;
 
-        const unsigned int read_nmsgs = 2;
+            unsigned char ndef_addr_buf[1] = {
+                static_cast<unsigned char>(addr & 0xFF)
+            };
 
-        struct i2c_msg msgs[2];
-	    struct i2c_rdwr_ioctl_data rdwr;
+            msgs[0].addr = _address;
+            msgs[0].flags = 0;
+            msgs[0].len = sizeof(ndef_addr_buf);
+            msgs[0].buf = ndef_addr_buf;
 
-        // The read operation is done by writing
-        // the u16 address and then reading
+            msgs[1].addr = _address;
+            msgs[1].flags = I2C_M_RD;
+            msgs[1].len = read_size;
+            msgs[1].buf = out_buf + offset;
 
-        unsigned char ndef_addr_buf[2] = {
-            (base_ndef_addr >> 8) & 0xFF,
-             base_ndef_addr       & 0xFF
-        };
-
-        memset(out_buf, 0, size_4B_aligned);
-
-        msgs[0].addr = _address;
-        msgs[0].flags = 0;
-        msgs[0].len = sizeof(ndef_addr_buf);
-        msgs[0].buf = ndef_addr_buf;
-
-        msgs[1].addr = _address;
-        msgs[1].flags = I2C_M_RD;
-        msgs[1].len = size_4B_aligned;
-        msgs[1].buf = out_buf;
-
-        rdwr.msgs = msgs;
-        rdwr.nmsgs = read_nmsgs;
+            rdwr.msgs = msgs;
+            rdwr.nmsgs = read_nmsgs;
 
 #if !defined(XINFC_DUMMY_OUT)
-        const int r = ioctl(_fd, I2C_RDWR, &rdwr);
+            const int r = ioctl(_fd, I2C_RDWR, &rdwr);
 
-        if (r != read_nmsgs)
-        {
-            throw i2c_error { "failed to read from i2c device", errno, r };
-        }
+            if (r != read_nmsgs)
+            {
+                throw i2c_error { "failed to read from i2c device", errno, r };
+            }
 #else
-        print_rdwr(rdwr);
+            print_rdwr(rdwr);
 #endif
+        }
     }
 
     void write_ndef_at(
@@ -207,38 +205,38 @@ public:
             throw i2c_error { "invalid ndef buffer size", 0, 0 };
         }
 
-        // Each write operation will only write 4 bytes of data
-        const unsigned int write_nmsgs = ((size - 1) / 4) + 1;
+        // Each write operation will write 16 bytes of data
+        const unsigned int chunk_size = 16;
+        const unsigned int write_nmsgs = ((size - 1) / chunk_size) + 1;
 
         struct i2c_msg msgs[write_nmsgs];
 	    struct i2c_rdwr_ioctl_data rdwr;
 
-        // Each write operation also needs 2 extra bytes of addressing
-        unsigned char ndef_wbuf[write_nmsgs * 6];
+        // Each write operation needs 1 extra byte of addressing
+        unsigned char ndef_wbuf[write_nmsgs * 17];
 
         for (unsigned int i = 0; i < write_nmsgs; i++)
         {
-            auto curr_buf_off = 4*i;
+            auto curr_buf_off = chunk_size*i;
             auto curr_p_buf = buf + curr_buf_off;
-            auto curr_p_wbuf = ndef_wbuf + 6*i;
-            auto ndef_addr = base_ndef_addr + ndef_off + curr_buf_off;
+            auto curr_p_wbuf = ndef_wbuf + 17*i;
+            auto ndef_addr = base_ndef_addr + ndef_off + i;
 
-            auto len = std::min(size - curr_buf_off, 4U);
+            auto len = std::min(size - curr_buf_off, chunk_size);
 
-            curr_p_wbuf[0] = (ndef_addr >> 8) & 0xFF;
-            curr_p_wbuf[1] =  ndef_addr       & 0xFF;
+            curr_p_wbuf[0] = static_cast<unsigned char>(ndef_addr & 0xFF);
 
             for (unsigned int j = 0; j < len; j++)
-                curr_p_wbuf[2 + j] = curr_p_buf[j];
+                curr_p_wbuf[1 + j] = curr_p_buf[j];
 
-            for (unsigned int j = len; j < 4; j++)
-                curr_p_wbuf[2 + j] = 0;
+            for (unsigned int j = len; j < chunk_size; j++)
+                curr_p_wbuf[1 + j] = 0;
 
             auto& msg = msgs[i];
 
             msg.addr = _address;
             msg.flags = 0;
-            msg.len = 6;
+            msg.len = 17;  // 1 byte address + 16 bytes data
             msg.buf = curr_p_wbuf;
         }
 
